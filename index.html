@@ -21,14 +21,15 @@
     } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
     // 🔥 DÁN FIREBASE CONFIG CỦA BẠN VÀO ĐÂY
-    const firebaseConfig = {
-      apiKey: "AIzaSyAVeljzWjPMxIHvKmteMNSRhLcx2Dg5jlg",
-      authDomain: "thanhvan-caa8b.firebaseapp.com",
-      projectId: "Thanh Vân-CAA8B",
-      storageBucket: "thanhvan-caa8b.firebasestorage.app",
-      messagingSenderId: "1094680841499",
-      appId: "G-VN8V5FC0MG"
-    };
+   const firebaseConfig = {
+  apiKey: "AIzaSy...",
+  authDomain: "thanhvan-caa8b.firebaseapp.com",
+  projectId: "thanhvan-caa8b",          // ← chữ thường, không dấu
+  storageBucket: "thanhvan-caa8b.firebasestorage.app",
+  messagingSenderId: "1094680841499",
+  appId: "1:1094680841499:web:abc123...", // ← dạng này
+  measurementId: "G-VN8V5FC0MG"         // ← cái G-... để ở đây mới đúng
+};
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
