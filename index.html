@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NhómHọc — Nền tảng chia sẻ kiến thức</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;0,9..144,700;1,9..144,400&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- ⚠️ THAY THẾ CẤU HÌNH FIREBASE CỦA BẠN Ở ĐÂY ⚠️ -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import {
+      getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
+      signOut, onAuthStateChanged, updateProfile
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+    import {
+      getFirestore, collection, doc, addDoc, getDoc, setDoc,
+      getDocs, updateDoc, deleteDoc, onSnapshot, query,
+      orderBy, serverTimestamp, where, arrayUnion, arrayRemove, increment
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    // 🔥 DÁN FIREBASE CONFIG CỦA BẠN VÀO ĐÂY
+    const firebaseConfig = {
+      apiKey: "PASTE_YOUR_API_KEY_HERE",
+      authDomain: "PASTE_YOUR_AUTH_DOMAIN_HERE",
+      projectId: "PASTE_YOUR_PROJECT_ID_HERE",
+      storageBucket: "PASTE_YOUR_STORAGE_BUCKET_HERE",
+      messagingSenderId: "PASTE_YOUR_SENDER_ID_HERE",
+      appId: "PASTE_YOUR_APP_ID_HERE"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // ===== STATE =====
+    let currentUser = null;
+    let currentUserData = null;
+    let currentView = "login";
+    let currentPostId = null;
+    let editingPostId = null;
+    let unsubPosts = null;
+    let unsubComments = null;
+
+    // ===== UTILS =====
+    function getYouTubeId(url) {
+      const m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|v\/))([\w-]{11})/);
+      return m ? m[1] : null;
+    }
+    function getGDriveId(url) {
+      const m = url.match(/\/d\/([\w-]+)/);
+      return m ? m[1] : null;
+    }
+    function timeAgo(ts) {
+      if (!ts) return "";
+      const d = ts.toDate ? ts.toDate() : new Date(ts);
+      const diff = (Date.now() - d.getTime()) / 1000;
+      if (diff < 60) return "vừa xong";
+      if (diff < 3600) return Math.floor(diff / 60) + " phút trước";
+      if (diff < 86400) return Math.floor(diff / 3600) + " giờ trước";
+      return Math.floor(diff / 86400) + " ngày trước";
+    }
+    function avatar(name) {
+      return (name || "?")[0].toUpperCase();
+    }
+    function showToast(msg, type = "success") {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.className = "toast show " + type;
+      setTimeout(() => t.className = "toast", 3000);
+    }
+
+    // ===== RENDER =====
+    function render() {
+      document.getElementById("app").innerHTML = views[currentView]();
+      bindEvents();
+    }
+
+    // ===== VIEWS =====
+    const views = {
+      login: () => `
+        <div class="auth-wrap">
+          <div class="auth-brand">
+            <span class="brand-icon">📚</span>
+            <h1 class="brand-name">NhómHọc</h1>
+            <p class="brand-sub">Nền tảng chia sẻ kiến thức nhóm</p>
+          </div>
+          <div class="auth-card" id="loginCard">
+            <h2>Đăng nhập</h2>
+            <input type="email" id="authEmail" placeholder="Email của bạn" class="input"/>
+            <input type="password" id="authPass" placeholder="Mật khẩu" class="input"/>
+            <button class="btn btn-primary" id="loginBtn">Đăng nhập</button>
+            <p class="auth-switch">Chưa có tài khoản? <a href="#" id="goRegister">Đăng ký ngay</a></p>
+          </div>
+          <div class="auth-card hidden" id="registerCard">
+            <h2>Đăng ký tài khoản</h2>
+            <input type="text" id="regName" placeholder="Họ và tên" class="input"/>
+            <input type="email" id="regEmail" placeholder="Email" class="input"/>
+            <input type="password" id="regPass" placeholder="Mật khẩu (ít nhất 6 ký tự)" class="input"/>
+            <button class="btn btn-primary" id="registerBtn">Tạo tài khoản</button>
+            <p class="auth-switch">Đã có tài khoản? <a href="#" id="goLogin">Đăng nhập</a></p>
+          </div>
+        </div>`,
+
+      feed: () => `
+        <div class="layout">
+          ${renderNav()}
+          <main class="main-content">
+            <div class="feed-header">
+              <h2 class="feed-title">Bài viết mới nhất</h2>
+              <button class="btn btn-primary" id="newPostBtn">+ Đăng bài mới</button>
+            </div>
+            <div id="postsList" class="posts-list"><div class="loading">Đang tải...</div></div>
+          </main>
+        </div>`,
+
+      post: () => `
+        <div class="layout">
+          ${renderNav()}
+          <main class="main-content">
+            <button class="btn btn-ghost back-btn" id="backBtn">← Quay lại</button>
+            <div id="postDetail" class="post-detail"><div class="loading">Đang tải...</div></div>
+          </main>
+        </div>`,
+
+      editor: () => `
+        <div class="layout">
+          ${renderNav()}
+          <main class="main-content editor-wrap">
+            <div class="editor-header">
+              <button class="btn btn-ghost" id="cancelEditor">← Huỷ</button>
+              <h2>${editingPostId ? "Chỉnh sửa bài" : "Đăng bài mới"}</h2>
+              <button class="btn btn-primary" id="savePost">💾 Lưu bài</button>
+            </div>
+            <div class="editor-card">
+              <input type="text" id="postTitle" placeholder="Tiêu đề bài viết..." class="input title-input" />
+              <div class="type-select">
+                <label>Loại bài:</label>
+                <div class="type-btns">
+                  <button class="type-btn active" data-type="text">📝 Bài viết</button>
+                  <button class="type-btn" data-type="video">🎬 Video</button>
+                  <button class="type-btn" data-type="file">📎 Tài liệu</button>
+                </div>
+              </div>
+              <div id="typeFields">
+                <textarea id="postContent" class="input textarea" placeholder="Nội dung bài viết..." rows="8"></textarea>
+              </div>
+              <div id="extraFields" class="extra-fields"></div>
+              <textarea id="postNote" class="input textarea sm" placeholder="Ghi chú thêm (tuỳ chọn)..." rows="3"></textarea>
+            </div>
+          </main>
+        </div>`,
+
+      members: () => `
+        <div class="layout">
+          ${renderNav()}
+          <main class="main-content">
+            <h2 class="feed-title">Thành viên nhóm</h2>
+            <div id="membersList" class="members-grid"><div class="loading">Đang tải...</div></div>
+          </main>
+        </div>`,
+    };
+
+    function renderNav() {
+      const name = currentUserData?.name || currentUser?.displayName || "Thành viên";
+      const role = currentUserData?.role || "member";
+      return `
+        <nav class="navbar">
+          <div class="nav-brand">
+            <span>📚</span> NhómHọc
+          </div>
+          <div class="nav-links">
+            <a class="nav-link ${currentView === 'feed' ? 'active' : ''}" id="navFeed">🏠 Trang chủ</a>
+            <a class="nav-link ${currentView === 'members' ? 'active' : ''}" id="navMembers">👥 Thành viên</a>
+          </div>
+          <div class="nav-user">
+            <div class="avatar" title="${name}">${avatar(name)}</div>
+            <div class="nav-user-info">
+              <span class="user-name">${name}</span>
+              <span class="user-role ${role}">${role === 'admin' ? '⭐ Admin' : '👤 Thành viên'}</span>
+            </div>
+            <button class="btn btn-ghost sm" id="logoutBtn">Đăng xuất</button>
+          </div>
+        </nav>`;
+    }
+
+    // ===== BIND EVENTS =====
+    function bindEvents() {
+      // Auth
+      const loginBtn = document.getElementById("loginBtn");
+      const registerBtn = document.getElementById("registerBtn");
+      const goRegister = document.getElementById("goRegister");
+      const goLogin = document.getElementById("goLogin");
+      if (loginBtn) loginBtn.onclick = doLogin;
+      if (registerBtn) registerBtn.onclick = doRegister;
+      if (goRegister) goRegister.onclick = (e) => { e.preventDefault(); toggleAuthForm(true); };
+      if (goLogin) goLogin.onclick = (e) => { e.preventDefault(); toggleAuthForm(false); };
+
+      // Nav
+      const navFeed = document.getElementById("navFeed");
+      const navMembers = document.getElementById("navMembers");
+      const logoutBtn = document.getElementById("logoutBtn");
+      if (navFeed) navFeed.onclick = () => navigate("feed");
+      if (navMembers) navMembers.onclick = () => navigate("members");
+      if (logoutBtn) logoutBtn.onclick = () => { signOut(auth); navigate("login"); };
+
+      // Feed
+      const newPostBtn = document.getElementById("newPostBtn");
+      if (newPostBtn) newPostBtn.onclick = () => { editingPostId = null; navigate("editor"); };
+
+      // Editor
+      const cancelEditor = document.getElementById("cancelEditor");
+      const savePost = document.getElementById("savePost");
+      if (cancelEditor) cancelEditor.onclick = () => navigate("feed");
+      if (savePost) savePost.onclick = doSavePost;
+
+      // Type buttons
+      document.querySelectorAll(".type-btn").forEach(btn => {
+        btn.onclick = () => {
+          document.querySelectorAll(".type-btn").forEach(b => b.classList.remove("active"));
+          btn.classList.add("active");
+          renderTypeFields(btn.dataset.type);
+        };
+      });
+
+      // Back
+      const backBtn = document.getElementById("backBtn");
+      if (backBtn) backBtn.onclick = () => navigate("feed");
+    }
+
+    function toggleAuthForm(showRegister) {
+      document.getElementById("loginCard").classList.toggle("hidden", showRegister);
+      document.getElementById("registerCard").classList.toggle("hidden", !showRegister);
+    }
+
+    function navigate(view) {
+      if (unsubPosts) { unsubPosts(); unsubPosts = null; }
+      if (unsubComments) { unsubComments(); unsubComments = null; }
+      currentView = view;
+      render();
+      if (view === "feed") loadPosts();
+      if (view === "post") loadPost();
+      if (view === "members") loadMembers();
+      if (view === "editor" && editingPostId) loadEditPost();
+    }
+
+    // ===== AUTH =====
+    async function doLogin() {
+      const email = document.getElementById("authEmail").value.trim();
+      const pass = document.getElementById("authPass").value;
+      if (!email || !pass) return showToast("Vui lòng nhập đầy đủ thông tin", "error");
+      try {
+        document.getElementById("loginBtn").textContent = "Đang đăng nhập...";
+        await signInWithEmailAndPassword(auth, email, pass);
+      } catch (e) {
+        showToast("Sai email hoặc mật khẩu!", "error");
+        document.getElementById("loginBtn").textContent = "Đăng nhập";
+      }
+    }
+
+    async function doRegister() {
+      const name = document.getElementById("regName").value.trim();
+      const email = document.getElementById("regEmail").value.trim();
+      const pass = document.getElementById("regPass").value;
+      if (!name || !email || !pass) return showToast("Vui lòng nhập đầy đủ thông tin", "error");
+      if (pass.length < 6) return showToast("Mật khẩu ít nhất 6 ký tự", "error");
+      try {
+        document.getElementById("registerBtn").textContent = "Đang tạo...";
+        const cred = await createUserWithEmailAndPassword(auth, email, pass);
+        await updateProfile(cred.user, { displayName: name });
+        // Kiểm tra xem đây có phải admin đầu tiên không
+        const usersSnap = await getDocs(collection(db, "users"));
+        const isFirst = usersSnap.empty;
+        await setDoc(doc(db, "users", cred.user.uid), {
+          name, email,
+          role: isFirst ? "admin" : "member",
+          joinedAt: serverTimestamp()
+        });
+        showToast(isFirst ? "Chào mừng Admin! 🎉" : "Đăng ký thành công! 🎉");
+      } catch (e) {
+        showToast(e.message.includes("email-already") ? "Email đã được sử dụng!" : "Đăng ký thất bại!", "error");
+        document.getElementById("registerBtn").textContent = "Tạo tài khoản";
+      }
+    }
+
+    // ===== POSTS =====
+    function loadPosts() {
+      const list = document.getElementById("postsList");
+      if (!list) return;
+      const q = query(collection(db, "posts"), orderBy("createdAt", "desc"));
+      unsubPosts = onSnapshot(q, snap => {
+        if (!list) return;
+        if (snap.empty) {
+          list.innerHTML = `<div class="empty-state">
+            <div class="empty-icon">📭</div>
+            <p>Chưa có bài viết nào. Hãy đăng bài đầu tiên!</p>
+          </div>`;
+          return;
+        }
+        list.innerHTML = snap.docs.map(d => renderPostCard(d.id, d.data())).join("");
+        // Bind card clicks
+        list.querySelectorAll(".post-card").forEach(card => {
+          card.onclick = (e) => {
+            if (e.target.closest(".card-actions")) return;
+            currentPostId = card.dataset.id;
+            navigate("post");
+          };
+        });
+        list.querySelectorAll(".edit-post-btn").forEach(btn => {
+          btn.onclick = (e) => { e.stopPropagation(); editingPostId = btn.dataset.id; navigate("editor"); };
+        });
+        list.querySelectorAll(".delete-post-btn").forEach(btn => {
+          btn.onclick = async (e) => {
+            e.stopPropagation();
+            if (!confirm("Xoá bài viết này?")) return;
+            await deleteDoc(doc(db, "posts", btn.dataset.id));
+            showToast("Đã xoá bài viết");
+          };
+        });
+        list.querySelectorAll(".like-btn").forEach(btn => {
+          btn.onclick = async (e) => {
+            e.stopPropagation();
+            const pid = btn.dataset.id;
+            const pDoc = doc(db, "posts", pid);
+            const snap = await getDoc(pDoc);
+            const likes = snap.data().likes || [];
+            if (likes.includes(currentUser.uid)) {
+              await updateDoc(pDoc, { likes: arrayRemove(currentUser.uid) });
+            } else {
+              await updateDoc(pDoc, { likes: arrayUnion(currentUser.uid) });
+            }
+          };
+        });
+      });
+    }
+
+    function renderPostCard(id, data) {
+      const isOwner = data.authorId === currentUser?.uid;
+      const isAdmin = currentUserData?.role === "admin";
+      const likes = data.likes || [];
+      const liked = likes.includes(currentUser?.uid);
+      const typeIcon = { text: "📝", video: "🎬", file: "📎" }[data.type] || "📝";
+      let preview = "";
+      if (data.type === "video" && data.videoUrl) {
+        const vid = getYouTubeId(data.videoUrl);
+        if (vid) preview = `<img class="video-thumb" src="https://img.youtube.com/vi/${vid}/mqdefault.jpg" alt="thumbnail"/>`;
+      }
+      return `
+        <article class="post-card" data-id="${id}">
+          ${preview}
+          <div class="card-body">
+            <div class="card-meta">
+              <span class="type-badge ${data.type}">${typeIcon} ${data.type === 'video' ? 'Video' : data.type === 'file' ? 'Tài liệu' : 'Bài viết'}</span>
+              <span class="card-time">${timeAgo(data.createdAt)}</span>
+            </div>
+            <h3 class="card-title">${data.title || "Không có tiêu đề"}</h3>
+            <p class="card-excerpt">${(data.content || "").substring(0, 150)}${(data.content || "").length > 150 ? "..." : ""}</p>
+            <div class="card-footer">
+              <div class="card-author">
+                <div class="avatar sm">${avatar(data.authorName)}</div>
+                <span>${data.authorName || "Ẩn danh"}</span>
+              </div>
+              <div class="card-actions">
+                <button class="like-btn ${liked ? 'liked' : ''}" data-id="${id}">
+                  ❤️ ${likes.length}
+                </button>
+                <span class="comment-count">💬 ${data.commentCount || 0}</span>
+                ${isOwner || isAdmin ? `
+                  <button class="btn btn-ghost sm edit-post-btn" data-id="${id}">✏️</button>
+                  <button class="btn btn-danger sm delete-post-btn" data-id="${id}">🗑️</button>
+                ` : ""}
+              </div>
+            </div>
+          </div>
+        </article>`;
+    }
+
+    // ===== POST DETAIL =====
+    async function loadPost() {
+      const container = document.getElementById("postDetail");
+      if (!container || !currentPostId) return;
+      const postRef = doc(db, "posts", currentPostId);
+      const snap = await getDoc(postRef);
+      if (!snap.exists()) { container.innerHTML = "<p>Không tìm thấy bài viết</p>"; return; }
+      const data = snap.data();
+      const isOwner = data.authorId === currentUser?.uid;
+      const isAdmin = currentUserData?.role === "admin";
+
+      let embedHtml = "";
+      if (data.type === "video" && data.videoUrl) {
+        const vid = getYouTubeId(data.videoUrl);
+        if (vid) embedHtml = `<div class="video-embed"><iframe src="https://www.youtube.com/embed/${vid}" allowfullscreen></iframe></div>`;
+        else embedHtml = `<a class="file-link" href="${data.videoUrl}" target="_blank">▶ Xem video</a>`;
+      }
+      if (data.type === "file" && data.fileUrl) {
+        const gid = getGDriveId(data.fileUrl);
+        if (gid) embedHtml = `<iframe class="gdrive-embed" src="https://drive.google.com/file/d/${gid}/preview" allowfullscreen></iframe>`;
+        else embedHtml = `<a class="file-link" href="${data.fileUrl}" target="_blank">📎 Mở tài liệu</a>`;
+      }
+
+      container.innerHTML = `
+        <article class="post-full">
+          <div class="post-meta-top">
+            <span class="type-badge ${data.type}">${{ text: "📝 Bài viết", video: "🎬 Video", file: "📎 Tài liệu" }[data.type]}</span>
+            <span class="card-time">${timeAgo(data.createdAt)}</span>
+            ${isOwner || isAdmin ? `
+              <button class="btn btn-ghost sm" id="editPostBtn">✏️ Sửa</button>
+              <button class="btn btn-danger sm" id="deletePostBtn">🗑️ Xoá</button>
+            ` : ""}
+          </div>
+          <h1 class="post-title">${data.title}</h1>
+          <div class="post-author">
+            <div class="avatar">${avatar(data.authorName)}</div>
+            <div><span class="author-name">${data.authorName}</span><br/><small>${timeAgo(data.createdAt)}</small></div>
+          </div>
+          ${embedHtml}
+          ${data.content ? `<div class="post-content">${data.content.replace(/\n/g, "<br>")}</div>` : ""}
+          ${data.note ? `<div class="post-note">📌 ${data.note}</div>` : ""}
+          <div class="post-likes">
+            <button class="like-btn-large ${(data.likes || []).includes(currentUser?.uid) ? 'liked' : ''}" id="likePostBtn">
+              ❤️ ${(data.likes || []).length} thích
+            </button>
+          </div>
+        </article>
+        <section class="comments-section">
+          <h3>💬 Bình luận (${data.commentCount || 0})</h3>
+          <div class="comment-form">
+            <div class="avatar sm">${avatar(currentUserData?.name)}</div>
+            <div class="comment-input-wrap">
+              <textarea id="commentText" class="input textarea sm" placeholder="Viết bình luận..." rows="2"></textarea>
+              <button class="btn btn-primary sm" id="submitComment">Gửi</button>
+            </div>
+          </div>
+          <div id="commentsList" class="comments-list"><div class="loading">Đang tải...</div></div>
+        </section>`;
+
+      // Bind post detail events
+      const editPostBtn = document.getElementById("editPostBtn");
+      const deletePostBtn = document.getElementById("deletePostBtn");
+      const likePostBtn = document.getElementById("likePostBtn");
+      const submitComment = document.getElementById("submitComment");
+
+      if (editPostBtn) editPostBtn.onclick = () => { editingPostId = currentPostId; navigate("editor"); };
+      if (deletePostBtn) deletePostBtn.onclick = async () => {
+        if (!confirm("Xoá bài viết này?")) return;
+        await deleteDoc(postRef);
+        showToast("Đã xoá bài viết");
+        navigate("feed");
+      };
+      if (likePostBtn) likePostBtn.onclick = async () => {
+        const s = await getDoc(postRef);
+        const likes = s.data().likes || [];
+        if (likes.includes(currentUser.uid)) await updateDoc(postRef, { likes: arrayRemove(currentUser.uid) });
+        else await updateDoc(postRef, { likes: arrayUnion(currentUser.uid) });
+        loadPost();
+      };
+      if (submitComment) submitComment.onclick = async () => {
+        const text = document.getElementById("commentText").value.trim();
+        if (!text) return showToast("Vui lòng nhập nội dung bình luận", "error");
+        await addDoc(collection(db, "posts", currentPostId, "comments"), {
+          text, authorId: currentUser.uid,
+          authorName: currentUserData?.name || currentUser.displayName,
+          createdAt: serverTimestamp()
+        });
+        await updateDoc(postRef, { commentCount: increment(1) });
+        document.getElementById("commentText").value = "";
+        showToast("Đã đăng bình luận!");
+      };
+
+      // Load comments realtime
+      const cq = query(collection(db, "posts", currentPostId, "comments"), orderBy("createdAt", "asc"));
+      unsubComments = onSnapshot(cq, snap => {
+        const cl = document.getElementById("commentsList");
+        if (!cl) return;
+        if (snap.empty) { cl.innerHTML = `<p class="no-comments">Chưa có bình luận. Hãy là người đầu tiên!</p>`; return; }
+        cl.innerHTML = snap.docs.map(d => {
+          const c = d.data();
+          const canDelete = c.authorId === currentUser?.uid || currentUserData?.role === "admin";
+          return `<div class="comment">
+            <div class="avatar sm">${avatar(c.authorName)}</div>
+            <div class="comment-body">
+              <div class="comment-header">
+                <span class="comment-author">${c.authorName}</span>
+                <span class="comment-time">${timeAgo(c.createdAt)}</span>
+                ${canDelete ? `<button class="del-comment btn btn-ghost sm" data-cid="${d.id}">✕</button>` : ""}
+              </div>
+              <p class="comment-text">${c.text.replace(/\n/g, "<br>")}</p>
+            </div>
+          </div>`;
+        }).join("");
+        cl.querySelectorAll(".del-comment").forEach(btn => {
+          btn.onclick = async () => {
+            if (!confirm("Xoá bình luận?")) return;
+            await deleteDoc(doc(db, "posts", currentPostId, "comments", btn.dataset.cid));
+            await updateDoc(postRef, { commentCount: increment(-1) });
+            showToast("Đã xoá bình luận");
+          };
+        });
+      });
+    }
+
+    // ===== EDITOR =====
+    let currentType = "text";
+
+    function renderTypeFields(type) {
+      currentType = type;
+      const extra = document.getElementById("extraFields");
+      const content = document.getElementById("postContent");
+      if (!extra) return;
+      if (type === "video") {
+        content.placeholder = "Mô tả video...";
+        extra.innerHTML = `<input type="url" id="videoUrl" class="input" placeholder="Link YouTube (vd: https://youtube.com/watch?v=...)"/>`;
+      } else if (type === "file") {
+        content.placeholder = "Mô tả tài liệu...";
+        extra.innerHTML = `<input type="url" id="fileUrl" class="input" placeholder="Link Google Drive hoặc bất kỳ URL tài liệu nào"/>`;
+      } else {
+        content.placeholder = "Nội dung bài viết...";
+        extra.innerHTML = "";
+      }
+    }
+
+    async function loadEditPost() {
+      if (!editingPostId) return;
+      const snap = await getDoc(doc(db, "posts", editingPostId));
+      if (!snap.exists()) return;
+      const data = snap.data();
+      const titleEl = document.getElementById("postTitle");
+      const contentEl = document.getElementById("postContent");
+      const noteEl = document.getElementById("postNote");
+      if (titleEl) titleEl.value = data.title || "";
+      if (contentEl) contentEl.value = data.content || "";
+      if (noteEl) noteEl.value = data.note || "";
+      // Set type
+      const typeBtn = document.querySelector(`.type-btn[data-type="${data.type}"]`);
+      if (typeBtn) { document.querySelectorAll(".type-btn").forEach(b => b.classList.remove("active")); typeBtn.classList.add("active"); renderTypeFields(data.type); }
+      if (data.type === "video" && document.getElementById("videoUrl")) document.getElementById("videoUrl").value = data.videoUrl || "";
+      if (data.type === "file" && document.getElementById("fileUrl")) document.getElementById("fileUrl").value = data.fileUrl || "";
+    }
+
+    async function doSavePost() {
+      const title = document.getElementById("postTitle")?.value.trim();
+      const content = document.getElementById("postContent")?.value.trim();
+      const note = document.getElementById("postNote")?.value.trim();
+      const videoUrl = document.getElementById("videoUrl")?.value.trim() || "";
+      const fileUrl = document.getElementById("fileUrl")?.value.trim() || "";
+      if (!title) return showToast("Vui lòng nhập tiêu đề bài viết", "error");
+      const saveBtn = document.getElementById("savePost");
+      if (saveBtn) saveBtn.textContent = "Đang lưu...";
+      const postData = {
+        title, content, note, type: currentType,
+        videoUrl, fileUrl,
+        authorId: currentUser.uid,
+        authorName: currentUserData?.name || currentUser.displayName,
+        updatedAt: serverTimestamp()
+      };
+      try {
+        if (editingPostId) {
+          await updateDoc(doc(db, "posts", editingPostId), postData);
+          showToast("Đã cập nhật bài viết! ✅");
+        } else {
+          postData.createdAt = serverTimestamp();
+          postData.likes = [];
+          postData.commentCount = 0;
+          await addDoc(collection(db, "posts"), postData);
+          showToast("Đã đăng bài thành công! 🎉");
+        }
+        navigate("feed");
+      } catch (e) {
+        showToast("Lỗi khi lưu bài: " + e.message, "error");
+        if (saveBtn) saveBtn.textContent = "💾 Lưu bài";
+      }
+    }
+
+    // ===== MEMBERS =====
+    async function loadMembers() {
+      const container = document.getElementById("membersList");
+      if (!container) return;
+      const snap = await getDocs(collection(db, "users"));
+      const isAdmin = currentUserData?.role === "admin";
+      container.innerHTML = snap.docs.map(d => {
+        const u = d.data();
+        return `<div class="member-card">
+          <div class="avatar lg">${avatar(u.name)}</div>
+          <div class="member-info">
+            <div class="member-name">${u.name}</div>
+            <div class="member-email">${u.email}</div>
+            <span class="user-role ${u.role}">${u.role === 'admin' ? '⭐ Admin' : '👤 Thành viên'}</span>
+          </div>
+          ${isAdmin && d.id !== currentUser?.uid ? `
+            <button class="btn btn-ghost sm toggle-role-btn" data-uid="${d.id}" data-role="${u.role}">
+              ${u.role === 'admin' ? 'Hạ xuống thành viên' : 'Thăng lên Admin'}
+            </button>
+          ` : ""}
+        </div>`;
+      }).join("");
+      container.querySelectorAll(".toggle-role-btn").forEach(btn => {
+        btn.onclick = async () => {
+          const newRole = btn.dataset.role === "admin" ? "member" : "admin";
+          await updateDoc(doc(db, "users", btn.dataset.uid), { role: newRole });
+          showToast("Đã cập nhật vai trò");
+          loadMembers();
+        };
+      });
+    }
+
+    // ===== AUTH STATE =====
+    onAuthStateChanged(auth, async user => {
+      currentUser = user;
+      if (user) {
+        try {
+          const userRef = doc(db, "users", user.uid);
+          const snap = await getDoc(userRef);
+          if (snap.exists()) {
+            currentUserData = snap.data();
+          } else {
+            // Tạo user data nếu chưa có
+            const isFirst = (await getDocs(collection(db, "users"))).empty;
+            currentUserData = {
+              name: user.displayName || "Thành viên",
+              email: user.email,
+              role: isFirst ? "admin" : "member",
+              joinedAt: serverTimestamp()
+            };
+            await setDoc(userRef, currentUserData);
+          }
+          navigate("feed");
+        } catch (e) {
+          navigate("feed");
+        }
+      } else {
+        currentUserData = null;
+        navigate("login");
+      }
+    });
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --brand: #4f46e5;
+      --brand-dark: #3730a3;
+      --brand-light: #eef2ff;
+      --accent: #10b981;
+      --danger: #ef4444;
+      --text: #1e1b4b;
+      --text-muted: #6b7280;
+      --bg: #f5f5ff;
+      --card: #ffffff;
+      --border: #e0e0f5;
+      --nav-h: 64px;
+      --radius: 16px;
+      --shadow: 0 4px 24px rgba(79,70,229,0.10);
+      --shadow-sm: 0 2px 8px rgba(0,0,0,0.08);
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    #app { min-height: 100vh; }
+
+    /* ===== TOAST ===== */
+    .toast {
+      position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+      background: var(--text); color: white;
+      padding: 12px 20px; border-radius: 12px;
+      font-size: 14px; font-weight: 500;
+      opacity: 0; transform: translateY(8px); pointer-events: none;
+      transition: all 0.3s ease;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); pointer-events: all; }
+    .toast.error { background: var(--danger); }
+    .toast.success { background: var(--accent); }
+
+    /* ===== LAYOUT ===== */
+    .layout { display: flex; flex-direction: column; min-height: 100vh; }
+    .main-content {
+      max-width: 860px; width: 100%; margin: 0 auto;
+      padding: 32px 20px; flex: 1;
+    }
+
+    /* ===== NAVBAR ===== */
+    .navbar {
+      height: var(--nav-h); background: white;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center;
+      padding: 0 24px; gap: 24px;
+      position: sticky; top: 0; z-index: 100;
+      box-shadow: var(--shadow-sm);
+    }
+    .nav-brand {
+      font-family: 'Fraunces', serif;
+      font-size: 22px; font-weight: 700;
+      color: var(--brand); letter-spacing: -0.5px;
+      white-space: nowrap;
+    }
+    .nav-links { display: flex; gap: 4px; flex: 1; }
+    .nav-link {
+      padding: 8px 14px; border-radius: 10px;
+      cursor: pointer; font-weight: 500; font-size: 14px;
+      color: var(--text-muted); text-decoration: none;
+      transition: all 0.2s;
+    }
+    .nav-link:hover, .nav-link.active { background: var(--brand-light); color: var(--brand); }
+    .nav-user { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+    .nav-user-info { display: flex; flex-direction: column; }
+    .user-name { font-size: 14px; font-weight: 600; }
+    .user-role { font-size: 11px; }
+    .user-role.admin { color: #d97706; }
+    .user-role.member { color: var(--text-muted); }
+
+    /* ===== AVATAR ===== */
+    .avatar {
+      width: 40px; height: 40px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--brand), #818cf8);
+      color: white; font-weight: 700; font-size: 16px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .avatar.sm { width: 32px; height: 32px; font-size: 13px; }
+    .avatar.lg { width: 56px; height: 56px; font-size: 22px; }
+
+    /* ===== BUTTONS ===== */
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 10px 18px; border-radius: 10px; border: none;
+      font-family: inherit; font-size: 14px; font-weight: 600;
+      cursor: pointer; transition: all 0.2s; white-space: nowrap;
+    }
+    .btn-primary { background: var(--brand); color: white; }
+    .btn-primary:hover { background: var(--brand-dark); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79,70,229,0.3); }
+    .btn-ghost { background: transparent; color: var(--text-muted); border: 1.5px solid var(--border); }
+    .btn-ghost:hover { background: var(--brand-light); color: var(--brand); border-color: var(--brand); }
+    .btn-danger { background: #fef2f2; color: var(--danger); border: 1.5px solid #fecaca; }
+    .btn-danger:hover { background: var(--danger); color: white; }
+    .btn.sm { padding: 6px 12px; font-size: 12px; border-radius: 8px; }
+
+    /* ===== INPUTS ===== */
+    .input {
+      width: 100%; padding: 12px 16px; border-radius: 12px;
+      border: 2px solid var(--border);
+      font-family: inherit; font-size: 15px; color: var(--text);
+      background: white; transition: border-color 0.2s;
+      outline: none;
+    }
+    .input:focus { border-color: var(--brand); }
+    .textarea { resize: vertical; min-height: 100px; }
+    .textarea.sm { min-height: 60px; }
+    .title-input { font-size: 20px; font-weight: 600; }
+
+    /* ===== AUTH ===== */
+    .auth-wrap {
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; padding: 24px;
+      background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 50%, #c7d2fe 100%);
+    }
+    .auth-brand { text-align: center; margin-bottom: 32px; }
+    .brand-icon { font-size: 48px; display: block; margin-bottom: 8px; }
+    .brand-name {
+      font-family: 'Fraunces', serif; font-size: 40px;
+      font-weight: 700; color: var(--brand); letter-spacing: -1px;
+    }
+    .brand-sub { color: var(--text-muted); font-size: 16px; margin-top: 4px; }
+    .auth-card {
+      background: white; border-radius: 24px;
+      padding: 36px 40px; width: 100%; max-width: 420px;
+      box-shadow: 0 20px 60px rgba(79,70,229,0.15);
+      display: flex; flex-direction: column; gap: 16px;
+    }
+    .auth-card h2 { font-family: 'Fraunces', serif; font-size: 26px; font-weight: 700; }
+    .auth-switch { text-align: center; font-size: 14px; color: var(--text-muted); }
+    .auth-switch a { color: var(--brand); text-decoration: none; font-weight: 600; }
+    .hidden { display: none !important; }
+
+    /* ===== FEED ===== */
+    .feed-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+    .feed-title { font-family: 'Fraunces', serif; font-size: 30px; font-weight: 700; }
+    .posts-list { display: flex; flex-direction: column; gap: 16px; }
+
+    /* ===== POST CARD ===== */
+    .post-card {
+      background: var(--card); border-radius: var(--radius);
+      border: 1.5px solid var(--border); overflow: hidden;
+      box-shadow: var(--shadow-sm); cursor: pointer;
+      transition: all 0.2s;
+    }
+    .post-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); border-color: #c7d2fe; }
+    .video-thumb { width: 100%; height: 200px; object-fit: cover; display: block; }
+    .card-body { padding: 20px; }
+    .card-meta { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+    .type-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    }
+    .type-badge.text { background: #ecfdf5; color: #059669; }
+    .type-badge.video { background: #fef3c7; color: #d97706; }
+    .type-badge.file { background: #eff6ff; color: #2563eb; }
+    .card-time { font-size: 12px; color: var(--text-muted); margin-left: auto; }
+    .card-title { font-size: 18px; font-weight: 700; margin-bottom: 8px; line-height: 1.4; }
+    .card-excerpt { font-size: 14px; color: var(--text-muted); line-height: 1.6; margin-bottom: 16px; }
+    .card-footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .card-author { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; }
+    .card-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    .like-btn {
+      background: none; border: 1.5px solid var(--border); border-radius: 8px;
+      padding: 4px 10px; cursor: pointer; font-size: 13px; transition: all 0.2s;
+    }
+    .like-btn:hover, .like-btn.liked { background: #fdf2f8; border-color: #f9a8d4; }
+    .comment-count { font-size: 13px; color: var(--text-muted); }
+
+    /* ===== POST DETAIL ===== */
+    .back-btn { margin-bottom: 20px; }
+    .post-full { background: white; border-radius: var(--radius); padding: 36px; border: 1.5px solid var(--border); }
+    .post-meta-top { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+    .post-title { font-family: 'Fraunces', serif; font-size: 32px; font-weight: 700; line-height: 1.3; margin-bottom: 20px; }
+    .post-author { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; padding-bottom: 24px; border-bottom: 1.5px solid var(--border); }
+    .author-name { font-weight: 600; font-size: 15px; }
+    .video-embed { position: relative; padding-bottom: 56.25%; height: 0; margin: 24px 0; border-radius: 12px; overflow: hidden; }
+    .video-embed iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+    .gdrive-embed { width: 100%; height: 500px; border: none; border-radius: 12px; margin: 24px 0; }
+    .file-link { display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px; background: var(--brand-light); color: var(--brand); border-radius: 10px; text-decoration: none; font-weight: 600; margin: 16px 0; }
+    .post-content { font-size: 16px; line-height: 1.8; color: #374151; margin-bottom: 24px; }
+    .post-note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: 12px 16px; border-radius: 0 10px 10px 0; margin-bottom: 24px; font-size: 14px; color: #92400e; }
+    .post-likes { padding-top: 20px; border-top: 1.5px solid var(--border); }
+    .like-btn-large { background: none; border: 2px solid var(--border); border-radius: 10px; padding: 10px 20px; cursor: pointer; font-size: 16px; font-weight: 600; transition: all 0.2s; }
+    .like-btn-large.liked { background: #fdf2f8; border-color: #f9a8d4; color: #be185d; }
+    .like-btn-large:hover { transform: scale(1.03); }
+
+    /* ===== COMMENTS ===== */
+    .comments-section { margin-top: 24px; background: white; border-radius: var(--radius); padding: 28px; border: 1.5px solid var(--border); }
+    .comments-section h3 { font-size: 18px; font-weight: 700; margin-bottom: 20px; }
+    .comment-form { display: flex; gap: 12px; margin-bottom: 24px; }
+    .comment-input-wrap { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+    .comments-list { display: flex; flex-direction: column; gap: 16px; }
+    .comment { display: flex; gap: 12px; }
+    .comment-body { flex: 1; background: var(--bg); border-radius: 12px; padding: 12px 16px; }
+    .comment-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .comment-author { font-weight: 600; font-size: 14px; }
+    .comment-time { font-size: 12px; color: var(--text-muted); }
+    .del-comment { margin-left: auto; padding: 2px 8px !important; }
+    .comment-text { font-size: 14px; line-height: 1.6; }
+    .no-comments { text-align: center; color: var(--text-muted); padding: 20px; }
+
+    /* ===== EDITOR ===== */
+    .editor-wrap { max-width: 760px; }
+    .editor-header { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
+    .editor-header h2 { font-family: 'Fraunces', serif; font-size: 24px; flex: 1; }
+    .editor-card { background: white; border-radius: var(--radius); padding: 28px; border: 1.5px solid var(--border); display: flex; flex-direction: column; gap: 16px; }
+    .type-select { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .type-select label { font-weight: 600; font-size: 14px; }
+    .type-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+    .type-btn {
+      padding: 8px 16px; border-radius: 10px; border: 2px solid var(--border);
+      background: white; cursor: pointer; font-size: 14px; font-weight: 500;
+      font-family: inherit; transition: all 0.2s;
+    }
+    .type-btn.active { border-color: var(--brand); background: var(--brand-light); color: var(--brand); }
+    .extra-fields { display: flex; flex-direction: column; gap: 12px; }
+
+    /* ===== MEMBERS ===== */
+    .members-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-top: 24px; }
+    .member-card { background: white; border-radius: var(--radius); padding: 20px; border: 1.5px solid var(--border); display: flex; align-items: center; gap: 16px; }
+    .member-info { flex: 1; }
+    .member-name { font-weight: 700; font-size: 16px; }
+    .member-email { font-size: 13px; color: var(--text-muted); margin: 2px 0 6px; }
+
+    /* ===== MISC ===== */
+    .loading { text-align: center; padding: 40px; color: var(--text-muted); }
+    .empty-state { text-align: center; padding: 60px 20px; }
+    .empty-icon { font-size: 48px; margin-bottom: 12px; }
+    .empty-state p { color: var(--text-muted); font-size: 16px; }
+
+    /* ===== RESPONSIVE ===== */
+    @media (max-width: 640px) {
+      .navbar { padding: 0 16px; gap: 12px; }
+      .nav-user-info { display: none; }
+      .nav-brand { font-size: 18px; }
+      .auth-card { padding: 24px 20px; }
+      .post-full { padding: 20px; }
+      .post-title { font-size: 24px; }
+      .feed-title { font-size: 22px; }
+      .members-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="auth-wrap">
+      <div class="auth-brand">
+        <span class="brand-icon">📚</span>
+        <h1 class="brand-name">NhómHọc</h1>
+        <p class="brand-sub">Đang khởi động...</p>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+</body>
+</html>
